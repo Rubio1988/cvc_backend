@@ -1,0 +1,4 @@
+# Ignorar DB y salidas de pruebas
+cvc.db
+/uploads/
+/gcode/
