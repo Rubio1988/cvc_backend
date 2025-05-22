@@ -31,9 +31,5 @@ jobs:
         run: |
           pytest --junitxml=reports/results.xml -q
 
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v3.1.2
-        with:
-          name: pytest-results
-          path: reports/results.xml
+      
+
