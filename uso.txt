@@ -1,0 +1,43 @@
+# CNC VisionCut Backend - FastAPI
+# ---------------------------------
+# Proyecto: CNC VisionCut
+# Descripción: API REST para carga de diseños, simulación y generación de G-code.
+#
+# Lenguaje:
+#   - Python 3.10+ (gratuito, multiplataforma).
+# IDE recomendado:
+#   - Visual Studio Code (VS Code). Gratuito y extensible con plugins para Python y FastAPI.
+#
+# Pasos para crear el proyecto (sin invertir dinero):
+# 1. Instalar Python 3.10+ desde https://python.org.
+# 2. Instalar VS Code desde https://code.visualstudio.com/ (opcional: add-ons como Pylance y Python extension).
+# 3. Crear carpeta del proyecto y abrirla en VS Code:
+#      mkdir cvc_backend && cd cvc_backend
+#      code .   # abre VS Code en la carpeta actual
+# 4. Crear y activar entorno virtual (evita dependencias globales):
+#      # En Windows:
+#      python -m venv venv
+#      .\\venv\\Scripts\\activate
+#      # En macOS/Linux:
+#      python3 -m venv venv
+#      source venv/bin/activate
+# 5. Instalar dependencias del backend:
+#      pip install fastapi uvicorn python-multipart pydantic
+# 6. (Opcional) Instalar herramientas de desarrollo:
+#      pip install black isort pytest
+#
+# Para ejecutar el servidor en modo desarrollo:
+#   uvicorn main:app --reload --host 0.0.0.0 --port 8000
+#
+# Estructura de carpetas sugerida:
+#   cvc_backend/
+#   ├── main.py          # Código principal de FastAPI
+#   ├── requirements.txt # (opcional) pip freeze > requirements.txt
+#   ├── uploads/         # Archivos subidos por usuario
+#   ├── gcode/           # G-code generados
+#   ├── models/          # Definiciones Pydantic y ORM
+#   ├── services/        # Lógica de CV, parser CAD, gcode
+#   ├── db.py            # Configuración de base de datos (SQLAlchemy)
+#   └── tests/           # Pruebas unitarias
+#
+##################################################################
