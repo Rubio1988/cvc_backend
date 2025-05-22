@@ -37,4 +37,3 @@ jobs:
         with:
           name: pytest-results
           path: reports/results.xml
-
