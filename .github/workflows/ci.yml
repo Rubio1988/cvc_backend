@@ -24,14 +24,16 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install fastapi uvicorn sqlalchemy pytest httpx passlib[bcrypt] python-jose svgpathtools; fi
 
-      - name: Run tests
+      - name: Create reports directory
+        run: mkdir -p reports
+
+      - name: Run tests with JUnit XML
         run: |
-          pytest -q
-          
+          pytest --junitxml=reports/results.xml -q
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v3
         with:
           name: pytest-results
-          path: |
-            ./reports
+          path: reports/results.xml
