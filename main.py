@@ -20,7 +20,6 @@ from sqlalchemy import (
     ForeignKey, UniqueConstraint
 )
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
-from sqlalchemy.exc import SQLAlchemyError
 
 from services.parse_cad import CADParser
 
@@ -71,29 +70,78 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     disabled = Column(Integer, default=0)
 
-# --- Modelos Pydantic ---
+# --- Modelos Pydantic con ejemplos ---
 class Token(BaseModel):
-    access_token: str
-    token_type: str
+    access_token: str = Field(..., example="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
+    token_type: str = Field(..., example="bearer")
 
 class UserBase(BaseModel):
-    username: str
-    email: Optional[str]
-    full_name: Optional[str]
-    disabled: bool
+    username: str = Field(..., example="user123")
+    email: Optional[str] = Field(None, example="user@example.com")
+    full_name: Optional[str] = Field(None, example="Full Name")
+    disabled: bool = Field(False)
 
 class UserCreate(BaseModel):
-    username: str = Field(..., min_length=3, max_length=50)
-    password: str = Field(..., min_length=6)
-    email: str
-    full_name: Optional[str]
+    username: str = Field(..., min_length=3, max_length=50, example="newuser")
+    password: str = Field(..., min_length=6, example="SecurePass123")
+    email: str = Field(..., example="newuser@example.com")
+    full_name: Optional[str] = Field(None, example="New User")
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "username": "newuser",
+                "password": "SecurePass123",
+                "email": "newuser@example.com",
+                "full_name": "New User"
+            }
+        }
 
 class GCodeParams(BaseModel):
-    project_id: str
-    feed_rate: float = Field(..., gt=0)
-    spindle_speed: int = Field(..., gt=0)
-    tool_diameter: float = Field(..., gt=0)
-    pass_depth: float = Field(..., gt=0)
+    project_id: str = Field(..., example="uuid-of-uploaded-project")
+    feed_rate: float = Field(..., gt=0, example=500.0)
+    spindle_speed: int = Field(..., gt=0, example=12000)
+    tool_diameter: float = Field(..., gt=0, example=3.175)
+    pass_depth: float = Field(..., gt=0, example=1.0)
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "project_id": "123e4567-e89b-12d3-a456-426614174000",
+                "feed_rate": 500.0,
+                "spindle_speed": 12000,
+                "tool_diameter": 3.175,
+                "pass_depth": 1.0
+            }
+        }
+
+class SimulationParams(BaseModel):
+    feed_rate: float
+    spindle_speed: int
+    tool_diameter: float
+    pass_depth: float
+
+class SimulationResponse(BaseModel):
+    vectors: List[List[List[float]]]
+    params: SimulationParams
+
+class SimulationWrapper(BaseModel):
+    simulation: SimulationResponse
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "simulation": {
+                    "vectors": [[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]],
+                    "params": {
+                        "feed_rate": 1000.0,
+                        "spindle_speed": 12000,
+                        "tool_diameter": 3.175,
+                        "pass_depth": 1.0
+                    }
+                }
+            }
+        }
+
+class GCodeResponse(BaseModel):
+    gcode_url: str = Field(..., example="/download/123e4567-e89b-12d3-a456-426614174000")
 
 # --- Instanciar aplicación ---
 app = FastAPI(
@@ -167,30 +215,44 @@ def startup_event():
     cad_parser = CADParser(upload_dir=UPLOAD_DIR)
 
 # --- Endpoints ---
-@app.post("/signup", response_model=UserBase)
+@app.post("/signup", response_model=UserBase, summary="Registrar nuevo usuario",
+          description="Crea un nuevo usuario con nombre, correo y contraseña.")
 async def signup(user_in: UserCreate, db=Depends(get_db)):
     if db.query(User).filter((User.username == user_in.username) | (User.email == user_in.email)).first():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Username or email already registered")
     hashed = get_password_hash(user_in.password)
-    user = User(username=user_in.username, email=user_in.email, full_name=user_in.full_name, hashed_password=hashed, disabled=0)
+    user = User(username=user_in.username, email=user_in.email,
+                full_name=user_in.full_name, hashed_password=hashed, disabled=0)
     db.add(user)
     db.commit()
-    return UserBase(username=user.username, email=user.email, full_name=user.full_name, disabled=bool(user.disabled))
+    return UserBase(username=user.username, email=user.email,
+                    full_name=user.full_name, disabled=bool(user.disabled))
 
-@app.post("/token", response_model=Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db=Depends(get_db)):
+@app.post("/token", response_model=Token, summary="Obtener token JWT",
+          description="Autentica usuario y devuelve un token para llamadas protegidas.")
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db=Depends(get_db)
+):
     user = await authenticate_user(db, form_data.username, form_data.password)
     if not user:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password", headers={"WWW-Authenticate": "Bearer"})
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED,
+                            detail="Incorrect username or password",
+                            headers={"WWW-Authenticate": "Bearer"})
     access_token = await create_access_token({"sub": user.username})
     return {"access_token": access_token, "token_type": "bearer"}
 
-@app.get("/users/me", response_model=UserBase)
+@app.get("/users/me", response_model=UserBase, summary="Datos del usuario actual",
+         description="Obtiene la información del usuario autenticado.")
 async def read_users_me(current_user: UserBase = Depends(get_current_user)):
     return current_user
 
-@app.post("/upload")
-async def upload_file(file: UploadFile = File(...), db=Depends(get_db), current_user: UserBase = Depends(get_current_user)):
+@app.post("/upload", summary="Subir archivo CAD/imagen",
+          description="Sube un archivo CAD (SVG, DXF, STL, OBJ) o imagen y devuelve un identificador de proyecto.",
+          responses={400: {"description": "Tipo de archivo no permitido"},
+                     401: {"description": "No autenticado"}})
+async def upload_file(file: UploadFile = File(..., description="Archivo CAD o imagen"),
+                      db=Depends(get_db), current_user: UserBase = Depends(get_current_user)):
     global cad_parser
     if cad_parser is None:
         cad_parser = CADParser(upload_dir=UPLOAD_DIR)
@@ -203,10 +265,7 @@ async def upload_file(file: UploadFile = File(...), db=Depends(get_db), current_
     with open(path, "wb") as f:
         f.write(await file.read())
     raw = cad_parser.parse(saved)
-    vectors = []
-    for poly in raw:
-        normalized = [[pt.real, pt.imag] if isinstance(pt, complex) else pt for pt in poly]
-        vectors.append(normalized)
+    vectors = [[[pt.real, pt.imag] if isinstance(pt, complex) else pt for pt in poly] for poly in raw]
     db.add(Project(id=project_id, filename=saved))
     db.flush()
     for v in vectors:
@@ -214,18 +273,25 @@ async def upload_file(file: UploadFile = File(...), db=Depends(get_db), current_
     db.commit()
     return {"project_id": project_id}
 
-@app.get("/simulation/{project_id}")
+@app.get("/simulation/{project_id}", response_model=SimulationWrapper, summary="Simulación CNC",
+         description="Devuelve vectores e parámetros para simular trayectoria.")
 async def simulation(project_id: str, db=Depends(get_db), current_user: UserBase = Depends(get_current_user)):
     rows = db.query(Vector).filter(Vector.project_id == project_id).all()
     vecs = [r.data for r in rows]
-    params = {"feed_rate": 1000, "spindle_speed": 12000, "tool_diameter": 3.175, "pass_depth": 1.0}
-    return {"simulation": {"vectors": vecs, "params": params}}
+    params = SimulationParams(
+        feed_rate=1000.0,
+        spindle_speed=12000,
+        tool_diameter=3.175,
+        pass_depth=1.0
+    )
+    return SimulationWrapper(simulation=SimulationResponse(vectors=vecs, params=params))
 
-@app.post("/gcode")
+@app.post("/gcode", response_model=GCodeResponse, summary="Generar G-code",
+          description="Genera un archivo G-code a partir de los vectores de un proyecto.")
 async def generate_gcode(params: GCodeParams, db=Depends(get_db), current_user: UserBase = Depends(get_current_user)):
     rows = db.query(Vector).filter(Vector.project_id == params.project_id).all()
     vecs = [r.data for r in rows]
-    lines = [f"; CNC VisionCut G-code for project {params.project_id}", "G21", "G90", f"F{params.feed_rate}", f"S{params.spindle_speed}"]
+    lines = [f"; CNC VisionCut G-code for {params.project_id}", "G21", "G90", f"F{params.feed_rate}", f"S{params.spindle_speed}"]
     for poly in vecs:
         if len(poly) < 2: continue
         x0, y0 = poly[0]
@@ -238,12 +304,15 @@ async def generate_gcode(params: GCodeParams, db=Depends(get_db), current_user: 
     out = os.path.join(GCODE_DIR, f"{params.project_id}.nc")
     with open(out, "w") as f:
         f.write("\n".join(lines))
-    return {"gcode_url": f"/download/{params.project_id}"}
+    return GCodeResponse(gcode_url=f"/download/{params.project_id}")
 
-@app.get("/download/{project_id}")
+@app.get("/download/{project_id}", summary="Descargar G-code",
+         description="Descarga el archivo G-code generado para un proyecto.")
 async def download(project_id: str, current_user: UserBase = Depends(get_current_user)):
     file_path = os.path.join(GCODE_DIR, f"{project_id}.nc")
     if not os.path.exists(file_path):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="G-code not found")
     return FileResponse(file_path, media_type="text/plain", filename=f"{project_id}.nc")
+
+
 
