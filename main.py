@@ -24,6 +24,10 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from services.parse_cad import CADParser
 
+# Parser global inicializado en startup
+global cad_parser
+cad_parser: CADParser = None
+
 # --- Configuración autenticación JWT ---
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me")
 ALGORITHM = "HS256"
@@ -67,34 +71,31 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     disabled = Column(Integer, default=0)
 
-# --- Modelos Pydantic con ejemplos y descripciones ---
+# --- Modelos Pydantic ---
 class Token(BaseModel):
-    access_token: str = Field(..., example="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
-    token_type: str = Field(..., example="bearer")
-
-class TokenData(BaseModel):
-    username: Optional[str] = None
+    access_token: str
+    token_type: str
 
 class UserBase(BaseModel):
-    username: str = Field(..., example="pepe123", description="Usuario único en la plataforma")
-    email: Optional[str] = Field(None, example="pepe@example.com", description="Correo electrónico del usuario")
-    full_name: Optional[str] = Field(None, example="José Pérez", description="Nombre completo del usuario")
-    disabled: bool = Field(False, description="Cuenta deshabilitada o no")
+    username: str
+    email: Optional[str]
+    full_name: Optional[str]
+    disabled: bool
 
 class UserCreate(BaseModel):
-    username: str = Field(..., min_length=3, max_length=50, example="pepe123")
-    password: str = Field(..., min_length=6, example="Secreto123", description="Contraseña segura con al menos 6 caracteres")
-    email: str = Field(..., example="pepe@example.com")
-    full_name: Optional[str] = Field(None, example="José Pérez")
+    username: str = Field(..., min_length=3, max_length=50)
+    password: str = Field(..., min_length=6)
+    email: str
+    full_name: Optional[str]
 
 class GCodeParams(BaseModel):
-    project_id: str = Field(..., example="550e8400-e29b-41d4-a716-446655440000")
-    feed_rate: float = Field(..., gt=0, example=1000.0)
-    spindle_speed: int = Field(..., gt=0, example=12000)
-    tool_diameter: float = Field(..., gt=0, example=3.175)
-    pass_depth: float = Field(..., gt=0, example=1.0)
+    project_id: str
+    feed_rate: float = Field(..., gt=0)
+    spindle_speed: int = Field(..., gt=0)
+    tool_diameter: float = Field(..., gt=0)
+    pass_depth: float = Field(..., gt=0)
 
-# --- Instanciar aplicación con metadata OpenAPI ---
+# --- Instanciar aplicación ---
 app = FastAPI(
     title="CNC VisionCut Backend",
     description="API REST para registro de usuarios, autenticación JWT, carga de diseños CAD/imagen, simulación CNC y generación de G-code.",
@@ -116,30 +117,24 @@ def get_db():
     finally:
         db.close()
 
-# --- Funciones auxiliares de autenticación ---
+# --- Auxiliares de autenticación ---
 def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
-async def get_user(db, username: str) -> Optional[UserBase]:
-    user = db.query(User).filter(User.username == username).first()
-    if user:
-        return UserBase(**user.__dict__)
-    return None
-
-async def authenticate_user(db, username: str, password: str):
-    user = await get_user(db, username)
-    if not user or not verify_password(password, user.hashed_password):
-        return False
-    return user
-
-async def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+async def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+async def authenticate_user(db, username: str, password: str):
+    user = db.query(User).filter(User.username == username).first()
+    if not user or not verify_password(password, user.hashed_password):
+        return None
+    return user
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db=Depends(get_db)) -> UserBase:
     credentials_exception = HTTPException(
@@ -152,13 +147,17 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db=Depends(get_d
         username: str = payload.get("sub")
         if not username:
             raise credentials_exception
-        token_data = TokenData(username=username)
     except JWTError:
         raise credentials_exception
-    user = await get_user(db, token_data.username)
-    if not user or user.disabled:
+    db_user = db.query(User).filter(User.username == username).first()
+    if not db_user or db_user.disabled:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Inactive user")
-    return user
+    return UserBase(
+        username=db_user.username,
+        email=db_user.email,
+        full_name=db_user.full_name,
+        disabled=bool(db_user.disabled)
+    )
 
 # --- Evento de arranque ---
 @app.on_event("startup")
@@ -167,87 +166,34 @@ def startup_event():
     global cad_parser
     cad_parser = CADParser(upload_dir=UPLOAD_DIR)
 
-# --- Endpoints de autenticación y usuarios ---
-@app.post(
-    "/signup", response_model=UserBase,
-    summary="Registrar usuario",
-    description="Crea un usuario con contraseña hasheada y devuelve sus datos públicos."
-)
+# --- Endpoints ---
+@app.post("/signup", response_model=UserBase)
 async def signup(user_in: UserCreate, db=Depends(get_db)):
-    """
-    Campos:
-    - **username**: usuario único
-    - **password**: contraseña en texto plano
-    - **email**: email válido
-    - **full_name**: nombre completo (opcional)
-    """
-    if db.query(User).filter(
-        (User.username == user_in.username) | (User.email == user_in.email)
-    ).first():
+    if db.query(User).filter((User.username == user_in.username) | (User.email == user_in.email)).first():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Username or email already registered")
     hashed = get_password_hash(user_in.password)
-    user = User(
-        username=user_in.username,
-        email=user_in.email,
-        full_name=user_in.full_name,
-        hashed_password=hashed,
-        disabled=0
-    )
+    user = User(username=user_in.username, email=user_in.email, full_name=user_in.full_name, hashed_password=hashed, disabled=0)
     db.add(user)
     db.commit()
-    return UserBase(
-        username=user.username,
-        email=user.email,
-        full_name=user.full_name,
-        disabled=bool(user.disabled)
-    )
+    return UserBase(username=user.username, email=user.email, full_name=user.full_name, disabled=bool(user.disabled))
 
-@app.post(
-    "/token", response_model=Token,
-    summary="Obtener token JWT",
-    description="Autentica usuario y genera token JWT. Datos enviados en form-urlencoded."
-)
-async def login_for_access_token(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db=Depends(get_db)
-):
-    """
-    - Envía `username` y `password` como form-data.
-    - Retorna `access_token` y `token_type`.
-    """
+@app.post("/token", response_model=Token)
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db=Depends(get_db)):
     user = await authenticate_user(db, form_data.username, form_data.password)
     if not user:
-        raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"}
-        )
-    token = await create_access_token({"sub": user.username})
-    return {"access_token": token, "token_type": "bearer"}
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password", headers={"WWW-Authenticate": "Bearer"})
+    access_token = await create_access_token({"sub": user.username})
+    return {"access_token": access_token, "token_type": "bearer"}
 
-@app.get(
-    "/users/me", response_model=UserBase,
-    summary="Perfil del usuario autenticado",
-    description="Requiere header Authorization: Bearer <token>."
-)
+@app.get("/users/me", response_model=UserBase)
 async def read_users_me(current_user: UserBase = Depends(get_current_user)):
     return current_user
 
-# --- Endpoint de subida de archivos ---
-@app.post(
-    "/upload",
-    summary="Subir archivo CAD/imagen",
-    description="Sube un archivo CAD (SVG, DXF, STL) o imagen y devuelve `project_id`.",
-    responses={400: {"description": "Tipo de archivo no permitido"}, 401: {"description": "No autenticado"}}
-)
-async def upload_file(
-    file: UploadFile = File(..., description="Archivo CAD o imagen"),
-    db=Depends(get_db),
-    current_user: UserBase = Depends(get_current_user)
-):
-    """
-    - Envia multipart/form-data con campo `file`.
-    """
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...), db=Depends(get_db), current_user: UserBase = Depends(get_current_user)):
+    global cad_parser
+    if cad_parser is None:
+        cad_parser = CADParser(upload_dir=UPLOAD_DIR)
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"File type not allowed: {ext}")
@@ -268,44 +214,18 @@ async def upload_file(
     db.commit()
     return {"project_id": project_id}
 
-# --- Simulación CNC ---
-@app.get(
-    "/simulation/{project_id}", summary="Obtener datos de simulación",
-    description="Devuelve vectores y parámetros de simulación para un proyecto dado.",
-    responses={404: {"description": "Proyecto no encontrado"}}
-)
-async def simulation(
-    project_id: str,
-    db=Depends(get_db),
-    current_user: UserBase = Depends(get_current_user)
-):
+@app.get("/simulation/{project_id}")
+async def simulation(project_id: str, db=Depends(get_db), current_user: UserBase = Depends(get_current_user)):
     rows = db.query(Vector).filter(Vector.project_id == project_id).all()
-    if not rows:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Project not found")
     vecs = [r.data for r in rows]
     params = {"feed_rate": 1000, "spindle_speed": 12000, "tool_diameter": 3.175, "pass_depth": 1.0}
     return {"simulation": {"vectors": vecs, "params": params}}
 
-# --- Generación de G-code ---
-@app.post(
-    "/gcode", summary="Generar G-code",
-    description="Genera G-code para un proyecto y devuelve URL de descarga.",
-    response_model= dict
-)
-async def generate_gcode(
-    params: GCodeParams,
-    db=Depends(get_db),
-    current_user: UserBase = Depends(get_current_user)
-):
+@app.post("/gcode")
+async def generate_gcode(params: GCodeParams, db=Depends(get_db), current_user: UserBase = Depends(get_current_user)):
     rows = db.query(Vector).filter(Vector.project_id == params.project_id).all()
-    if not rows:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Project not found")
     vecs = [r.data for r in rows]
-    lines = [
-        f"; CNC VisionCut G-code for project {params.project_id}",
-        "G21", "G90",
-        f"F{params.feed_rate}", f"S{params.spindle_speed}"
-    ]
+    lines = [f"; CNC VisionCut G-code for project {params.project_id}", "G21", "G90", f"F{params.feed_rate}", f"S{params.spindle_speed}"]
     for poly in vecs:
         if len(poly) < 2: continue
         x0, y0 = poly[0]
@@ -320,28 +240,10 @@ async def generate_gcode(
         f.write("\n".join(lines))
     return {"gcode_url": f"/download/{params.project_id}"}
 
-# --- Descarga de G-code ---
-@app.get(
-    "/download/{project_id}", summary="Descargar G-code",
-    description="Descarga el archivo G-code generado.",
-    response_class=FileResponse,
-    responses={404: {"description": "G-code no encontrado"}}
-)
-async def download(
-    project_id: str,
-    current_user: UserBase = Depends(get_current_user)
-):
+@app.get("/download/{project_id}")
+async def download(project_id: str, current_user: UserBase = Depends(get_current_user)):
     file_path = os.path.join(GCODE_DIR, f"{project_id}.nc")
     if not os.path.exists(file_path):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="G-code not found")
     return FileResponse(file_path, media_type="text/plain", filename=f"{project_id}.nc")
-
-# --- Ejemplos de uso en cURL ---
-# curl -X POST http://127.0.0.1:8000/signup \
-#   -H "Content-Type: application/json" \
-#   -d '{"username":"pepe123","password":"Secreto123","email":"pepe@example.com"}'
-# curl -X POST http://127.0.0.1:8000/token \
-#   -H "Content-Type: application/x-www-form-urlencoded" \
-#   -d "username=pepe123&password=Secreto123"
-
 
